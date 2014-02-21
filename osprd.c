@@ -179,8 +179,8 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 			else
 				d->readLocks--;
 		}
-		osp_spin_unlock(&d->mutex);
 		wake_up_all(&d->blockq);
+		osp_spin_unlock(&d->mutex);
 		// EXERCISE: If the user closes a ramdisk file that holds
 		// a lock, release the lock.  Also wake up blocked processes
 		// as appropriate.
@@ -210,14 +210,14 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 
 	// Set 'r' to the ioctl's return value: 0 on success, negative on error
 		//	eprintk("removing the ticket head");
-	osp_spin_lock(&(d->mutex));
-	unsigned thisTicket = d->ticket_head;
-	d->ticket_head++;
-	osp_spin_unlock(&(d->mutex));
 
 	if (cmd == OSPRDIOCACQUIRE) {
+		osp_spin_lock(&(d->mutex));
+		unsigned thisTicket = d->ticket_head;
+		d->ticket_head++;
 		if(filp_writable) //attempt to write-lock;	
 		{
+			osp_spin_unlock(&(d->mutex));
 			r = wait_event_interruptible(d->blockq, (d->writeLocks == 0 && d->readLocks == 0 && d->ticket_tail == thisTicket));
 			osp_spin_lock(&(d->mutex));
 			if(r != 0) 
@@ -233,6 +233,7 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		else	//attempt to read-lock;
 		{
 				//	eprintk ("nWriteLocks == %u d->ticket_tail == %u thisTicket == %u \n", d->writeLocks, d->ticket_tail, thisTicket);
+			osp_spin_unlock(&(d->mutex));
 			r = wait_event_interruptible(d->blockq, (d->writeLocks == 0 && d->ticket_tail == thisTicket));
 			osp_spin_lock(&(d->mutex));
 			if(r != 0)
@@ -290,35 +291,32 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
 		// block.  If OSPRDIOCACQUIRE would block or return deadlock,
 		// OSPRDIOCTRYACQUIRE should return -EBUSY.
 		// Otherwise, if we can grant the lock request, return 0.
+		osp_spin_lock(&(d->mutex));
 
 		if(filp_writable) //attempt to write-lock;	
 		{
-			if(d->writeLocks != 0 || d->readLocks != 0 || d->ticket_tail != thisTicket)
+			if(d->writeLocks != 0 || d->readLocks != 0 || d->ticket_tail != d->ticket_head)
 				r = -EBUSY;
 			else
 			{
 				r = 0;
-				osp_spin_lock(&(d->mutex));
 				filp->f_flags |= F_OSPRD_LOCKED;
 				d->writeLocks++;
-				d->ticket_tail++;
-				osp_spin_unlock(&(d->mutex));
 			}
 		}
 		else	//attempt to read-lock;
 		{
-			if(d->writeLocks != 0 || d->ticket_tail == thisTicket)
+			if(d->writeLocks != 0 || d->ticket_tail != d->ticket_head)
 				r = -EBUSY;
 			else
 			{
 				r = 0;
-				osp_spin_lock(&(d->mutex));
 				filp->f_flags |= F_OSPRD_LOCKED;
 				d->readLocks++;
-				d->ticket_tail++;
-				osp_spin_unlock(&(d->mutex));
 			}
 		}	
+		
+		osp_spin_unlock(&(d->mutex));
 
 	} else if (cmd == OSPRDIOCRELEASE) {
 			
